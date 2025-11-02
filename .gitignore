@@ -1,0 +1,14 @@
+# Go
+bin/
+*.exe
+*.test
+*.out
+coverage*.txt
+go.work
+go.work.sum
+
+# VS Code
+.vscode/
+
+# 依赖缓存（如有）
+vendor/
