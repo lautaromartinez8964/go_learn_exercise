@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"unicode"
@@ -92,6 +93,25 @@ func main() {
 	for item, count := range wordCountsMap {
 		fmt.Printf("'%s':%d\n", item, count)
 	}
+
+	// 练习6：闭包
+	//创建一个说Hello的问候函数
+	greetHello := makeGreeter("Hello")
+	greetNihao := makeGreeter("你好")
+	fmt.Println(greetHello("Alice"))
+	fmt.Println(greetNihao("小名"))
+	// 创建一个说“你好”的问候函数
+
+	// 练习7：金币分配
+	fmt.Println("开始进行金币分配...")
+	left, err := dispatchCoin(users, coins, distribution)
+	// go中最常见的代码块: if err != nil 如果err不是nil，说明发生了错误
+	if err != nil {
+		log.Fatalf("!!!分配失败:%v", err)
+		// 使用 log.Fatalf 可以打印错误信息并以非0状态码退出程序
+	}
+	fmt.Println("分配成功！")
+	fmt.Println("剩下：", left)
 
 }
 
@@ -263,4 +283,89 @@ func countWordsAndChars(s string) map[string]int {
 	processWord() // 收尾工作
 
 	return counts
+}
+
+// 练习六：闭包函数
+// 闭包就是一个函数和它能访问的环境变量（在它外面定义的变量）的组合体。即使外部函数已经执行完了，这个内部函数仍然能记住并操作那些外部变量
+// 闭包可以用来创建一系列功能相似但是配置不同的函数
+// makeGreeter是一个函数工厂，它接受一个前缀（汉语名或英语名），然后生产出汉语/英语的问候函数
+func makeGreeter(prefix string) func(string) string {
+	//返回的函数是一个闭包，它捕获了外部变量prefix
+	return func(name string) string {
+		return prefix + "," + name
+	}
+}
+
+// 练习七：分配金币
+// 你有50枚金币，需要分配给以下几个人：Matthew,Sarah,Augustus,Heidi,Emilie,Peter,Giana,Adriano,Aaron,Elizabeth。
+// 分配规则如下：
+// a. 名字中每包含1个'e'或'E'分1枚金币
+// b. 名字中每包含1个'i'或'I'分2枚金币
+// c. 名字中每包含1个'o'或'O'分3枚金币
+// d: 名字中每包含1个'u'或'U'分4枚金币
+// 写一个程序，计算每个用户分到多少金币，以及最后剩余多少金币？
+var (
+	coins = 30
+	users = []string{
+		"Matthew", "Sarah", "Augustus", "Heidi", "Emilie", "Peter", "Giana", "Adriano", "Aaron", "Elizabeth",
+	}
+	distribution = make(map[string]int, len(users))
+)
+
+//思路：
+// 1.在dispatchCoin函数开始时，定义一个分配金币总数的变量
+// 2.在函数开头使用defer安排一个匿名函数，用于在最后打印出完整的distribution map，作为一份详细的分配报告
+// 3,开始遍历users切片，对于每一个name:
+//    .定义一个变量personCoins用于计算当前这个人的金币数，初始化为0
+//    .遍历name字符串中的每一个字符(rune) 这两个遍历都用range遍历
+//    .对于每一个字符，使用switch语句来判断，是什么字母，加多少金币
+//    .内层循环（字符遍历）结束后，personCoins就是这个人应得的金币总数，存入字典，并更新已分配的金币总数
+// 4.外层循环（用户遍历）结束后，计算剩余金币，返回剩余值
+
+func dispatchCoin(users []string, coins int, distribution map[string]int) (int, error) {
+	//定义一个累计已分配金币的变量
+	totalDistributed := 0
+
+	//使用defer在函数退出前打印最终的分配详情 可以把defer当作“稍后处理”的便签
+	defer func() {
+		fmt.Println("===== 分配详情 =====")
+		for name, amount := range distribution {
+			fmt.Printf("%s:%d\n", name, amount)
+		}
+		fmt.Println("=========")
+	}() // 最后这个括号是函数调用操作符，意思是：执行这个函数 defer函数的完整定义：defer func() { ... }()
+
+	// 1.遍历所有用户
+	for _, name := range users {
+		personalCoins := 0 // 定义个人的分配数量
+		// 2.遍历当前用户名的每一个字符
+		for _, rune := range name {
+			switch rune {
+			case 'e', 'E':
+				personalCoins += 1
+			case 'i', 'I':
+				personalCoins += 2
+			case 'o', 'O':
+				personalCoins += 3
+			case 'u', 'U':
+				personalCoins += 4
+			}
+		}
+		// 3.将计算出的个人金币数存入字典
+		distribution[name] = personalCoins
+		// 4.累加到总分配金币数中
+		totalDistributed += personalCoins
+	}
+
+	// 以下是错误处理：如果分配的金币超过了金币总数
+	// 这里可以用panic和recover，但是会被认为是滥用
+	//  panic被设计用来处理真正灾难性的，程序无法继续正常运行的错误，典型例如数组越界，空指针引用
+	// 这里可以用error返回值，error被设计用来处理可预期的，业务逻辑范围内的失败情况，典型例如格式错误，打开不存在文件，网络超时等
+	//   error是程序正常运行中可能遇到的“非成功”状态
+	if totalDistributed > coins {
+		// 创建一个error对象
+		err := fmt.Errorf("金币不足！需要%d,但只有%d", totalDistributed, coins)
+		return 0, err //这个大函数需要定义一个error返回类型，出错返回error对象，不出错返回nil
+	}
+	return coins - totalDistributed, nil
 }
