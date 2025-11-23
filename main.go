@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"unicode"
@@ -113,6 +115,70 @@ func main() {
 	fmt.Println("分配成功！")
 	fmt.Println("剩下：", left)
 
+	// 练习8：面向对象学生数据库
+	// 创建一个班级花名册
+	classOne := NewRoster(101)
+
+	// 添加学生
+	classOne.AddStudent("Alice", 18, []string{"数学", "物理"})
+	classOne.AddStudent("Bob", 19, []string{"化学", "生物"})
+	classOne.AddStudent("Charlie", 18, []string{"历史", "地理"})
+
+	// 展示学生列表
+	classOne.ShowAllStudents()
+
+	// 编辑学生信息
+	// 1. 先获取要编辑的学生信息（在真实应用中，这可能是从前端传来的）
+	studentToUpdate := Student{
+		ID:       2, // 我们要更新 Bob
+		Name:     "Robert (Bob)",
+		Age:      20,
+		Subjects: []string{"化学", "计算机科学"},
+	}
+	// 2. 调用更新方法
+	err8_1 := classOne.UpdateStudent(studentToUpdate)
+	if err8_1 != nil {
+		fmt.Println(err8_1)
+	}
+
+	// 再次展示，查看更新结果
+	classOne.ShowAllStudents()
+
+	// 删除学生
+	err8_1 = classOne.DeleteStudent(1) // 删除 Alice
+	if err != nil {
+		fmt.Println(err8_1)
+	}
+
+	// 再次添加学生，验证ID生成是否安全
+	classOne.AddStudent("David", 17, []string{"美术", "音乐"})
+
+	defaultsubjects := []string{"中文"}
+	classOne.AddDefaultSubjectsToAll(defaultsubjects)
+
+	// 最终展示
+	classOne.ShowAllStudents()
+
+	// 练习9：接口，依赖注入
+	fmt.Println("--- 场景一:使用控制台日志记录器---")
+	consoleLogger := NewConsoleLogger()                 //创建ConsoleLogger实例
+	consoleUserService := NewUserService(consoleLogger) //依赖注入：将consoleLogger注入到UserService中
+	consoleUserService.CreateUser("Alice")
+
+	fmt.Println("--- 场景二：使用文件日志记录器---")
+	fileLogger, err := NewFileLogger("exercise9_application.log")
+	if err != nil {
+		//如果日志文件都无法创建，程序无法正常运行，直接退出
+		log.Fatalf("无法创建文件日志记录器: %v", err)
+	}
+
+	defer fileLogger.close()                      // 确保在main函数退出前，文件句柄一定会被关闭
+	fileUserService := NewUserService(fileLogger) // 依赖注入:将fileLogger注入到另一个UserService实例中
+	// 调用业务方法
+	fileUserService.CreateUser("Bob")
+	fileUserService.DeleteUser("Alice")
+
+	fmt.Println("\n操作完成。请检查与本程序同目录下的 'application.log' 文件。")
 }
 
 // 练习1 辅助函数，计算一个rune在UTF-8编码下占用的字节数
@@ -305,7 +371,7 @@ func makeGreeter(prefix string) func(string) string {
 // d: 名字中每包含1个'u'或'U'分4枚金币
 // 写一个程序，计算每个用户分到多少金币，以及最后剩余多少金币？
 var (
-	coins = 30
+	coins = 50
 	users = []string{
 		"Matthew", "Sarah", "Augustus", "Heidi", "Emilie", "Peter", "Giana", "Adriano", "Aaron", "Elizabeth",
 	}
@@ -368,4 +434,234 @@ func dispatchCoin(users []string, coins int, distribution map[string]int) (int, 
 		return 0, err //这个大函数需要定义一个error返回类型，出错返回error对象，不出错返回nil
 	}
 	return coins - totalDistributed, nil
+}
+
+// 练习八：面向对象的学生数据管理系统具体逻辑详解
+// 1. 数据结构 (Student 和 Roster)
+//    Student 结构体:
+//      逻辑: 这是一个纯粹的“数据容器”或“模型”，定义了一个学生应该具备哪些属性（ID, Name, Age, Subjects）。它简单、直接，不包含任何业务逻辑。
+//      代码: type Student struct { ... }
+//    Roster 结构体:
+//      逻辑: 这是整个系统的“大脑”和“管理者”。它不仅仅是一个学生列表，还包含了管理这个列表所必需的“元数据”（metadata）。
+//      ClassID int: 标识这个花名册属于哪个班级，是业务属性。
+//      nextID int: 这是内部管理状态，负责生成唯一的学生ID。它是私有的（首字母小写），意味着只有 Roster 自己的方法才能访问和修改它，外部代码无法干预，保证了ID生成的安全性。
+//      Students map[int]*Student: 这是核心数据存储。我们没有用切片 []Student，而是用了映射（map）。
+//        key 是 int: 直接使用学生的 ID 作为键。
+//        value 是 *Student: 存储的是指向 Student 对象的指针。这样做的好处是，当我们修改 map 中的学生对象时，我们是在修改原始的那个对象，而不是它的副本。这在Go中是处理复杂结构体集合时的常见做法，既高效又符合直觉。
+// 2. 构造函数 (NewRoster)
+//     逻辑: 任何复杂的对象都应该有一个“标准”的创建流程，以确保它被创建出来时处于一个可用、有效的状态。这就是构造函数的作用。
+//     代码: func NewRoster(classID int) *Roster { ... }
+//     执行细节:
+//         接收一个 classID 作为参数。
+//         创建一个 Roster 实例。
+//         将 ClassID 赋值。
+//         关键: 初始化 nextID 为 1，确保ID从一个有意义的数字开始。
+//         关键: 使用 make(map[int]*Student) 来初始化 Students map。如果忘记这一步，map会是 nil，后续任何向map中添加数据的操作都会导致程序 panic（运行时恐慌）。
+//         返回这个初始化好的 Roster 对象的指针。
+// 3. 核心方法 (CRUD: Create, Read, Update, Delete)
+//     AddStudent (Create):
+//      逻辑: 负责“制造”一个新学生并将其登记在册。
+//      执行细节:
+// 	   接收创建学生所需的所有原始信息（name, age, subjects）。
+//        使用 Roster 内部维护的 nextID 作为新学生的唯一ID。
+//        创建一个 Student 实例。
+//        将新创建的 Student 实例的指针存入 Students map中，键就是它的ID。
+//        关键: 将 r.nextID++，为下一个要添加的学生做好准备。
+//     ShowAllStudents (Read):
+//      逻辑: 遍历并展示所有已登记的学生信息。
+//      执行细节:
+//      这是一个只读操作，所以它使用了值接收者 (r Roster)，虽然用指针接收者也没错，但值接收者更能从语法上表明“我不会修改你”。
+//       通过 range 遍历 r.Students map，打印每个学生的信息。
+//      UpdateStudent (Update):
+//       逻辑: 用新的信息替换掉一个已存在的学生信息。
+//       执行细节:
+//         接收一个完整的 Student 对象作为参数，这个对象的 ID 字段指明了要更新哪个学生。
+//         安全检查: 首先通过 ID 检查 Students map中是否存在这个学生。这是非常重要的防御性编程，防止对不存在的数据进行操作。如果不存在，返回一个 error。
+// 		如果存在，直接用新的 Student 对象指针替换掉 map 中旧的对象指针。操作简单、高效。
+//      DeleteStudent (Delete):
+//       逻辑: 将一个学生从名册中除名。
+//       执行细节:
+//         接收一个 id 作为参数。
+//         安全检查: 同样，先检查这个 id 对应的学生是否存在，不存在则返回错误。
+//         如果存在，使用Go的内置函数 delete(r.Students, id) 从 map 中安全地移除这个键值对。
+
+// ---1.数据结构定义---
+type Student struct {
+	ID       int
+	Name     string
+	Age      int
+	Subjects []string
+}
+
+// Roster(花名册)，整个班级的学生,包含了学生列表和一个用于安全生成ID的计数器
+type Roster struct {
+	ClassId  int
+	nextID   int              // 小写私有字段，用于内部自增ID，更安全
+	Students map[int]*Student // 使用map来存储学生，相比切片，通过ID查找会非常快 每个int对应的是地址变量，可以修改原始变量
+}
+
+// ---2.构造函数---
+// Roster构造函数，初始化一个空的班级花名册
+func NewRoster(classID int) *Roster {
+	return &Roster{
+		ClassId:  classID,
+		nextID:   1,                      //学生ID从1开始
+		Students: make(map[int]*Student), //初始化map
+	}
+}
+
+// --- 3.Roster的方法（增删查改）---
+// AddStudent向花名册中添加一个新学生，使用指针接收者，因为要修改Roster的内部状态(nextID和Students.map)
+func (r *Roster) AddStudent(name string, age int, subjects []string) *Student {
+	// 创建一个新学生实例
+	newStudent := &Student{
+		ID:       r.nextID,
+		Name:     name,
+		Age:      age,
+		Subjects: subjects, //在这个简单场景下，直接赋值即可
+	}
+
+	//将新学生存入Map
+	r.Students[newStudent.ID] = newStudent
+	r.nextID++ //ID自增，为下一个学生做准备
+
+	fmt.Printf("成功添加学生: %s(ID:%d)\n", name, newStudent.ID)
+	return newStudent
+}
+
+// ShowAllStudents 展示所有学生信息 使用值接收者Roster即可，因为它不需要修改任何状态，只读取
+func (r Roster) ShowAllStudents() {
+	fmt.Printf("\n---班级%d 学生列表 ---\n", r.ClassId)
+	if len(r.Students) == 0 {
+		fmt.Println("班级里没有学生")
+	}
+	for _, s := range r.Students {
+		fmt.Printf("ID: %d, 姓名：%s, 年龄: %d, 科目: %v\n,", s.ID, s.Name, s.Age, s.Subjects)
+	}
+	fmt.Println("--------")
+}
+
+// UpdateStudent 更新一个已经存在的学生信息
+// 我们传递一个包含更新后数据的Student对象，更灵活且类型安全,返回值是error类型（类似fastapi里面的jsonexception），成功的话就返回无错误响应
+func (r *Roster) UpdateStudent(updatestudent Student) error {
+	// 检查学生是否存在u
+	_, exists := r.Students[updatestudent.ID]
+	if !exists {
+		return errors.New("更新失败，找不到该ID的学生")
+	}
+	// 用更新后的学生数据直接替换map中的旧数据，因为Map中的value类型是指针，这里需要取地址
+	r.Students[updatestudent.ID] = &updatestudent
+	fmt.Printf("成功更新学生信息 (ID: %d)\n", updatestudent.ID)
+	return nil
+
+}
+
+// deleteStudent，从花名册中删除一个学生
+func (r *Roster) DeleteStudent(id int) error {
+	_, exists := r.Students[id]
+	if !exists {
+		return errors.New("删除失败：找不到该ID的学生")
+	}
+	delete(r.Students, id) // 内置函数，传入字典和要删除的key值
+	fmt.Printf("成功删除学生 (ID: %d)\n", id)
+	return nil
+}
+
+// 一个需要深拷贝的例子：为所有学生批量添加一个默认科目，但又不希望改变传入的那个“默认科目列表”
+func (r *Roster) AddDefaultSubjectsToAll(defaultSubjects []string) {
+	for _, student := range r.Students {
+		// 如果这里直接 student.Subjects = append(student.Subjects, defaultSubjects...)
+		// 那么所有学生都会共享同一个defaultSubjects切片的底层数组，非常危险
+		// 正确的做法是为每个学生都创建一个副本
+		newSubjects := make([]string, len(student.Subjects), len(student.Subjects)+len(defaultSubjects)) //创建了一个全新的切片，元素数量为原来科目的数量，容量为原来科目+新默认科目，拥有自己独立的一块新内存
+		copy(newSubjects, student.Subjects)                                                              // 将原学生科目中的内容，逐个元素复制到这个全新的newSubjects切片中
+		newSubjects = append(newSubjects, defaultSubjects...)                                            // 将默认科目添加到这个全新的切片中
+		student.Subjects = newSubjects                                                                   // 学生的科目指向了这个全新的，独立的切片
+	}
+}
+
+// 练习九：使用接口及依赖注入的方式实现一个既可以往终端写日志也可以往文件写日志的简易日志库
+
+// 1.契约层(Abstraction): Logger 接口
+//
+//	LOgger定义了所有日志记录器都必须遵守的规范
+type Logger interface {
+	Log(message string)
+	Error(message string)
+}
+
+// 2.实现层(Implementations):具体的日志记录器
+// ---控制台日志实现--
+type ConsoleLogger struct{} // ConsoleLogger将日志打印到标准输出(控制台)
+
+func NewConsoleLogger() ConsoleLogger {
+	// ConsoleLogger的构造函数
+	return ConsoleLogger{}
+}
+
+func (c ConsoleLogger) Log(message string) {
+	log.Printf("CONSOLE LOG:%s\n", message)
+}
+
+func (c ConsoleLogger) Error(message string) {
+	log.Printf("CONSOLE ERROR:%s\n", message)
+}
+
+// ---文件日志实现---
+type FileLogger struct {
+	file *os.File // file变量存储的是一个指向os.File的指针 文件句柄
+}
+
+func NewFileLogger(filename string) (*FileLogger, error) {
+	// FileLogger的构造函数，会打开或创建指定的日志文件，如果失败则返回错误
+	// os.O_CREATE: 文件不存在则创建 os.O_WRONLY: 只写模式 os.O_APPEND: 追加内容到文件末尾
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		return nil, err
+	}
+
+	return &FileLogger{file: file}, err
+	// 任何可能失败的初始化操作（如打开文件，连接数据库）都应当在构造函数中处理，并通过返回一个error来明确告知调用者操作是否成功
+
+}
+
+// 将日志写入文件的函数，使用指针接收者，因为它需要操作结构体内部的file字段
+func (f *FileLogger) Log(message string) {
+	// 使用fmt.Fprintf将格式化后的字符串写入到f.file中
+	fmt.Fprintf(f.file, "FILE LOG:%s\n", message)
+}
+
+func (f *FileLogger) Error(message string) {
+	fmt.Fprintf(f.file, "FILE Error:%s\n", message)
+}
+
+func (f *FileLogger) close() {
+	f.file.Close() // Close是一个重要的办法，用于在程序结束时关闭文件句柄，防止资源泄漏
+}
+
+// 3.消费层 依赖于接口的服务
+// UserService 负责用户相关的业务逻辑，它依赖于Logger接口 (业务服务，依赖抽象接口)
+type UserService struct {
+	logger Logger
+}
+
+func NewUserService(logger Logger) *UserService {
+	// 业务服务的构造函数，通过依赖注入来接受一个Logger
+	return &UserService{logger: logger}
+}
+
+func (us *UserService) CreateUser(username string) {
+	//
+	us.logger.Log(fmt.Sprintf("starting to create user'%s'...", username))
+	// 这里是创建用户的复杂逻辑
+	fmt.Printf("... (业务逻辑) User '%s' created in database.\n", username)
+	us.logger.Log(fmt.Sprintf("User '%s' created successfully.", username))
+}
+
+func (us *UserService) DeleteUser(username string) {
+	us.logger.Error(fmt.Sprintf("Starting to delete user '%s'...", username))
+	// ... 假设这里是危险的删除用户逻辑 ...
+	fmt.Printf("... (业务逻辑) User '%s' deleted from database.\n", username)
+	us.logger.Error(fmt.Sprintf("User '%s' deleted successfully.", username))
+
 }
