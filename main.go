@@ -4,9 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -179,6 +182,57 @@ func main() {
 	fileUserService.DeleteUser("Alice")
 
 	fmt.Println("\n操作完成。请检查与本程序同目录下的 'application.log' 文件。")
+
+	// 练习十：goroutine和channel并发，生成100个随机数，让24个并发程序去执行它
+	const numJobs = 100
+	const numWorkers = 24
+
+	jobChan := make(chan int64, numJobs)     // 创建存储任务的jobchannel，带缓冲,意味着producer可以一口气将所有100个任务全部发送到jobchan而不会被阻塞，即便没有worker立即开始处理
+	resultChan := make(chan string, numJobs) // 创建存储结果的resultchannel，带缓冲
+
+	var wg sync.WaitGroup // 声明一个sync.WaitGroup变量
+
+	for i := 1; i <= numWorkers; i++ {
+		wg.Add(1)                              //必须在启动goroutine之前调用，将WaitGroup的计数器加一，表示有新的任务需要等待
+		go worker(i, &wg, jobChan, resultChan) // 会启动一个新的goroutine，判断jobchannel为空后进入阻塞（等待）状态
+	}
+
+	go producer(jobChan, numJobs) //启动生产者
+
+	// 同样需要一个goroutine在所有worker完成后关闭resultChan
+	go func() {
+		wg.Wait()         // 阻塞当前这个匿名goroutine,直到WaitGroup的计数器变为0
+		close(resultChan) // 当wg.wait()返回时，意味着所有的worker都已调用Done()并退出，此刻不会再有任何数据被写入ResultChan，关闭它
+	}()
+
+	fmt.Println("主程序：开始接收结果，设置1秒超时...")
+	timeout := time.After(1 * time.Second) // 一次性定时器 
+	// time.After(duration）在调用时，会立即返回一个channel(chan time.Time),即Go 的运行时会在后台为你启动一个计时器
+    // 当duration（这里是1秒）的时间过去后，Go运行时会自动地向这个channel里发送一个值（当前的时间）
+	// timeout变量的本质是： 一个在未来某个时间点（1s后）才会受到数据的特殊channel
+
+	var resultsCollected int = 0           // 用于在超时发生时报告已完成了多少个工作
+
+	// select多路复用：它会阻塞，直到其下的某一个case的channel操作准备就绪
+	for {
+		select {
+		case result, ok := <-resultChan:
+			if !ok {
+				fmt.Println("所有结果已成功接收")
+				return
+			}
+			fmt.Println(result)
+			resultsCollected++
+			// 如果channel未关闭且有数据，程序打印结果并增加计数器。如果channel已被关闭且无数据（正常完成的信号），程序打印成功信息，并通过return正常退出main函数
+
+		case <-timeout:
+			fmt.Printf("\n!!! 处理超时，1秒内收集到%d/%d个结果\n", resultsCollected, numJobs)
+			return
+			// timeout channel有数据了，就代表超时了
+
+		}
+	}
+
 }
 
 // 练习1 辅助函数，计算一个rune在UTF-8编码下占用的字节数
@@ -663,5 +717,74 @@ func (us *UserService) DeleteUser(username string) {
 	// ... 假设这里是危险的删除用户逻辑 ...
 	fmt.Printf("... (业务逻辑) User '%s' deleted from database.\n", username)
 	us.logger.Error(fmt.Sprintf("User '%s' deleted successfully.", username))
+
+}
+
+// 练习十：生成一百个随机数
+// 开启一个 goroutine 循环生成int64类型的随机数，发送到jobChan
+// 开启24个 goroutine 从jobChan中取出随机数计算各位数的和，将结果发送到resultChan
+// 主 goroutine 从resultChan取出结果并打印到终端输出
+// select多路复用条件：
+// 必须满足以下两个条件之一：全部完成：所有 100 个任务的结果都被成功接收。
+// 全局超时：如果在 1秒钟 内没有完成所有任务，主程序将不再等待，立即报告超时并退出
+// 目标: 在规定时间内（1秒），并发地处理完一个固定数量（100个）的任务。如果超时，则放弃任务并报告
+// 设计思想:
+// 职责分离: 程序被清晰地划分为三个
+// 生产者 (producer): 负责创建任务
+// 消费者/工人 (worker): 负责执行任务。
+// 调度者 (main): 负责启动和编排所有部分，并根据不同事件（任务完成或超时）来控制程序的最终流程。
+// 通信取代共享内存: 角色之间不共享任何需要加锁的变量。它们通过 channel 这一管道来安全地传递数据（任务和结果）。
+
+// producer函数-任务的创造者
+func producer(jobs chan<- int64, numjobs int) {
+	// jobchan 用于发送随机数任务 chan<- int64 表示这是一个只写channel，<-在chan右边表示这个函数只能向该channel发送数据，不能从中接收
+	// numjobs表示需要生成的任务总数
+
+	defer close(jobs)
+	// 确保在producer函数执行完毕退出前，一定关闭jobs channel
+	// 如果没有这句，worker goroutine中的for range循环在处理完所有任务后会永远阻塞，等待新任务，导致整个程序死锁
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	// 初始化一个高质量的随机数生成器，种子为当前时间的纳秒数
+
+	for i := 0; i < numjobs; i++ {
+		jobs <- r.Int63()
+	}
+	// 循环生成指定数量的随机数，并将其发送到jobs channel
+	fmt.Println("生产者：所有任务已经发送完毕")
+
+}
+
+// worker函数-任务的执行者
+func worker(id int, wg *sync.WaitGroup, jobs <-chan int64, results chan<- string) {
+	// wg必须是指针
+	// jobs <-chan int64: 一个只读channel, <-在chan左边，表示这个函数只能从该channel接收数据
+	// results chan<- string:一个只写channel， 用于发送处理结果
+
+	defer wg.Done()
+	// 确保在worker函数退出前，通知WaitGroup它已经完成任务
+
+	// 循环地从jobs channel中接受任务，直到channel被关闭
+	// for...range用于、channel时，会自动处理以下逻辑:
+	// 1.阻塞并等待jobs channel中有新数据 2.当有数据时，将其赋值给num并执行循环体 3.当jobs channel被关闭并且channel中所有已被发送的数据都被接收完毕后，循环自动结束
+	for num := range jobs {
+		time.Sleep(50 * time.Millisecond)
+		// 每个任务耗时50ms
+
+		originalNum := num
+		var sum int64 = 0
+		for num > 0 {
+			sum += num % 10
+			num /= 10
+		}
+		// 计算每位数字和
+
+		result := fmt.Sprintf("Worker %d | 随机数: %d | 个位数之和: %d", id, originalNum, sum)
+		// 打印至控制台
+
+		results <- result
+		// 将结果写入result channel中
+
+	}
 
 }
