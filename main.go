@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -8,10 +9,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/sync/errgroup"
 )
 
 func main() {
@@ -190,33 +192,54 @@ func main() {
 	jobChan := make(chan int64, numJobs)     // 创建存储任务的jobchannel，带缓冲,意味着producer可以一口气将所有100个任务全部发送到jobchan而不会被阻塞，即便没有worker立即开始处理
 	resultChan := make(chan string, numJobs) // 创建存储结果的resultchannel，带缓冲
 
-	var wg sync.WaitGroup // 声明一个sync.WaitGroup变量
+	// 1.创建一个带有1秒超时的context
+	// context.WithTimeout 返回一个新的context和一个cancel函数
+	// defer cancel()是必须的，能确保在main函数退出时，所有与此context相关的资源都被释放
+	// context本质上是一个接口，我们通常从一个空的context.Background()开始，像套娃一样，用context.WithCancel, context.WithTimeout或context.WithDeadline派生出新的，带有特定功能的context
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
 
+	// 2.使用errgroup.WithContext创建一个与我们的context绑定的group
+	// g会和waitGroup一样，管理goroutine的生命周期
+	// errgroup包的withContext函数接收一个父context，返回一个新的Group对象（类似waitgroup）和一个子context对象
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// 3.启动生产者，作为group的一部分
+	// errgroup.Gropu提供了Go和Wait两个方法，这两个方法需提供一个返回err的函数
+	// Go函数会在新的goroutine中调用传入的函数f，第一个返回非零错误的调用将取消该Group， 下面的Wait方法会返回该错误
+	// Wait会阻塞直至上述Go方法调用的所有函数都返回，然后从它们返回第一个非nil的错误
+	g.Go(func() error {
+		return producer(gCtx, jobChan, numJobs)
+	})
+
+	// 4.启动所有工人，作为group的一部分
 	for i := 1; i <= numWorkers; i++ {
-		wg.Add(1)                              //必须在启动goroutine之前调用，将WaitGroup的计数器加一，表示有新的任务需要等待
-		go worker(i, &wg, jobChan, resultChan) // 会启动一个新的goroutine，判断jobchannel为空后进入阻塞（等待）状态
+		workerID := i // 闭包问题：必须在循环内创建局部变量
+		g.Go(func() error {
+			return worker(gCtx, workerID, jobChan, resultChan)
+		})
 	}
 
-	go producer(jobChan, numJobs) //启动生产者
-
+	// 5.启动一个专门的goroutine来等待所有生产者和工人完成
 	// 同样需要一个goroutine在所有worker完成后关闭resultChan
 	go func() {
-		wg.Wait()         // 阻塞当前这个匿名goroutine,直到WaitGroup的计数器变为0
+		g.Wait()          // 阻塞当前这个匿名goroutine,直到WaitGroup的计数器变为0
 		close(resultChan) // 当wg.wait()返回时，意味着所有的worker都已调用Done()并退出，此刻不会再有任何数据被写入ResultChan，关闭它
 	}()
 
 	fmt.Println("主程序：开始接收结果，设置1秒超时...")
-	timeout := time.After(1 * time.Second) // 一次性定时器 
+	timeout := time.After(1 * time.Second) // 一次性定时器
 	// time.After(duration）在调用时，会立即返回一个channel(chan time.Time),即Go 的运行时会在后台为你启动一个计时器
-    // 当duration（这里是1秒）的时间过去后，Go运行时会自动地向这个channel里发送一个值（当前的时间）
+	// 当duration（这里是1秒）的时间过去后，Go运行时会自动地向这个channel里发送一个值（当前的时间）
 	// timeout变量的本质是： 一个在未来某个时间点（1s后）才会受到数据的特殊channel
 
-	var resultsCollected int = 0           // 用于在超时发生时报告已完成了多少个工作
+	var resultsCollected int = 0 // 用于在超时发生时报告已完成了多少个工作
 
 	// select多路复用：它会阻塞，直到其下的某一个case的channel操作准备就绪
 	for {
 		select {
 		case result, ok := <-resultChan:
+
 			if !ok {
 				fmt.Println("所有结果已成功接收")
 				return
@@ -225,10 +248,17 @@ func main() {
 			resultsCollected++
 			// 如果channel未关闭且有数据，程序打印结果并增加计数器。如果channel已被关闭且无数据（正常完成的信号），程序打印成功信息，并通过return正常退出main函数
 
+		// 主循环超时与context（监听所有的goroutine）超时分开
+		// timeout让主程序知道1秒到了，context让所有worker和producer构成的goroutine检测到一秒到了并停止
 		case <-timeout:
+			cancel() // 主动取消所有goroutine
 			fmt.Printf("\n!!! 处理超时，1秒内收集到%d/%d个结果\n", resultsCollected, numJobs)
 			return
 			// timeout channel有数据了，就代表超时了
+
+		case <-gCtx.Done(): //新增：监听errgroup的取消信号
+			fmt.Printf("\n程序因错误而终止\n")
+			return
 
 		}
 	}
@@ -736,7 +766,8 @@ func (us *UserService) DeleteUser(username string) {
 // 通信取代共享内存: 角色之间不共享任何需要加锁的变量。它们通过 channel 这一管道来安全地传递数据（任务和结果）。
 
 // producer函数-任务的创造者
-func producer(jobs chan<- int64, numjobs int) {
+// 接受一个context优雅退出
+func producer(ctx context.Context, jobs chan<- int64, numjobs int) error {
 	// jobchan 用于发送随机数任务 chan<- int64 表示这是一个只写channel，<-在chan右边表示这个函数只能向该channel发送数据，不能从中接收
 	// numjobs表示需要生成的任务总数
 
@@ -746,45 +777,75 @@ func producer(jobs chan<- int64, numjobs int) {
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	// 初始化一个高质量的随机数生成器，种子为当前时间的纳秒数
-
 	for i := 0; i < numjobs; i++ {
-		jobs <- r.Int63()
+		// 在发送任务前，检查context是否已被取消
+		select {
+		case <-ctx.Done():
+			// 如果context被取消（例如因为超时或另一个goroutine出错),生产者就没必要再继续发送任务了
+			fmt.Printf("生产者:收到取消信号，停止生产。 错误: %v\n", ctx.Err())
+			return ctx.Err()
+		default:
+			// context正常，继续发送任务
+			jobs <- r.Int63()
+		}
+
 	}
 	// 循环生成指定数量的随机数，并将其发送到jobs channel
+
 	fmt.Println("生产者：所有任务已经发送完毕")
+	return nil
 
 }
 
 // worker函数-任务的执行者
-func worker(id int, wg *sync.WaitGroup, jobs <-chan int64, results chan<- string) {
+// 接受context并返回error，不需要waitgroup参数了，现在使用context和errormap
+func worker(ctx context.Context, id int, jobs <-chan int64, results chan<- string) error {
 	// wg必须是指针
 	// jobs <-chan int64: 一个只读channel, <-在chan左边，表示这个函数只能从该channel接收数据
 	// results chan<- string:一个只写channel， 用于发送处理结果
-
-	defer wg.Done()
-	// 确保在worker函数退出前，通知WaitGroup它已经完成任务
 
 	// 循环地从jobs channel中接受任务，直到channel被关闭
 	// for...range用于、channel时，会自动处理以下逻辑:
 	// 1.阻塞并等待jobs channel中有新数据 2.当有数据时，将其赋值给num并执行循环体 3.当jobs channel被关闭并且channel中所有已被发送的数据都被接收完毕后，循环自动结束
 	for num := range jobs {
-		time.Sleep(50 * time.Millisecond)
-		// 每个任务耗时50ms
+		//在处理每个任务前，先检查context是否已取消
+		select {
+		case <-ctx.Done():
+			fmt.Printf("工人 %d：收到取消信号，停止工作，错误:%v\n", id, ctx.Err())
+			return ctx.Err()
+		default:
+			// 模拟一个可能出错的场景
+			if num%11 == 0 {
+				// 假设遇到11的倍数就是一个无法处理的错误
+				err := fmt.Errorf("工人 %d: 遇到一个无法处理的数字: %d", id, num)
+				fmt.Println(err.Error())
+				return err // 返回错误，这将触发整个errgroup的取消
+			}
 
-		originalNum := num
-		var sum int64 = 0
-		for num > 0 {
-			sum += num % 10
-			num /= 10
+			time.Sleep(50 * time.Millisecond)
+			// 每个任务耗时50ms
+
+			originalNum := num
+			var sum int64 = 0
+			for num > 0 {
+				sum += num % 10
+				num /= 10
+			}
+			// 计算每位数字和
+
+			result := fmt.Sprintf("Worker %d | 随机数: %d | 个位数之和: %d", id, originalNum, sum)
+			// 打印至控制台
+
+			// 在发送结果前，再次检查context
+			select {
+			case results <- result:
+			case <-ctx.Done():
+				fmt.Printf("工人 %d:准备发送结果时受到信号，错误:%v\n", id, ctx.Err())
+				return ctx.Err()
+			}
 		}
-		// 计算每位数字和
-
-		result := fmt.Sprintf("Worker %d | 随机数: %d | 个位数之和: %d", id, originalNum, sum)
-		// 打印至控制台
-
-		results <- result
-		// 将结果写入result channel中
 
 	}
+	return nil
 
 }
