@@ -1,0 +1,2 @@
+ERROR: Database connection failed: timeout expired
+ERROR: User authentication failed for user 'admin'

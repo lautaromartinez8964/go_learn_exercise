@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"iter"
 	"log"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -236,32 +240,86 @@ func main() {
 	var resultsCollected int = 0 // 用于在超时发生时报告已完成了多少个工作
 
 	// select多路复用：它会阻塞，直到其下的某一个case的channel操作准备就绪
+	// ResultsLoop标签用于从外层循环中跳出，在并发程序中监听多个通道事件，并在特定条件下退出循环而不返回
+ResultsLoop:
 	for {
 		select {
 		case result, ok := <-resultChan:
 
 			if !ok {
 				fmt.Println("所有结果已成功接收")
-				return
+				break ResultsLoop
 			}
+
 			fmt.Println(result)
 			resultsCollected++
-			// 如果channel未关闭且有数据，程序打印结果并增加计数器。如果channel已被关闭且无数据（正常完成的信号），程序打印成功信息，并通过return正常退出main函数
+		// 如果channel未关闭且有数据，程序打印结果并增加计数器。如果channel已被关闭且无数据（正常完成的信号），程序打印成功信息，并通过break跳出循环
 
 		// 主循环超时与context（监听所有的goroutine）超时分开
 		// timeout让主程序知道1秒到了，context让所有worker和producer构成的goroutine检测到一秒到了并停止
 		case <-timeout:
 			cancel() // 主动取消所有goroutine
 			fmt.Printf("\n!!! 处理超时，1秒内收集到%d/%d个结果\n", resultsCollected, numJobs)
-			return
+			break ResultsLoop
 			// timeout channel有数据了，就代表超时了
 
 		case <-gCtx.Done(): //新增：监听errgroup的取消信号
-			fmt.Printf("\n程序因错误而终止\n")
-			return
+			fmt.Printf("\n程序因错误而终止,收集到%d/%d个结果\n", resultsCollected, numJobs)
+			break ResultsLoop
 
 		}
 	}
+	fmt.Println("\n--- 继续执行后续练习 ---")
+
+	// 练习十一：订单系统筛选迭代器
+	// 准备一些模拟数据
+	mgr := OrderManager{
+		orders: []Order{
+			{ID: 1, Amount: 50.0, Status: "Pending"},  // 金额太小，应该被跳过
+			{ID: 2, Amount: 200.0, Status: "Paid"},    // 状态不对，应该被跳过
+			{ID: 3, Amount: 150.0, Status: "Pending"}, // 符合条件！
+			{ID: 4, Amount: 300.0, Status: "Pending"}, // 符合条件！
+			{ID: 5, Amount: 20.0, Status: "Pending"},  // 金额太小
+			{ID: 6, Amount: 500.0, Status: "Pending"}, // 符合条件，但我们可能不需要处理这么多
+		},
+	}
+	fmt.Println("---开始处理大额待支付订单---")
+
+	// 使用迭代器:调用之前定义的迭代器方法
+	// 注意这里代码非常干净，主函数完全不知道筛选逻辑是怎样的
+	var orderCount int = 0
+	for order := range mgr.BigPendingOrders(100) {
+		orderCount++
+		fmt.Printf("处理订单ID:%d, 金额:%.2f, 状态:%s\n", order.ID, order.Amount, order.Status)
+		// 模拟：我们只处理前两个就够了
+		if orderCount >= 2 {
+			fmt.Println(">>任务已达标，停止处理")
+			break
+		}
+	}
+	fmt.Println("---流程结束---")
+
+	// 练习十二:日志文件处理器
+	// 使用flag包定义命令行参数
+	sourceFile := flag.String("src", "", "Source Log file path(required)")
+	destFile := flag.String("dst", "", "Destination Log file path(required)")
+	var keyword string
+	flag.StringVar(&keyword, "key", "ERROR", "Keyword to filter by") //两种不同的命令行参数方式
+	flag.Parse()                                                     // 解析命令行参数 必须要
+
+	// 参数校验
+	if *sourceFile == "" || *destFile == "" {
+		fmt.Println("错误:源文件路径和目标文件路径都是必需的")
+		flag.Usage() // 打印帮助信息
+		os.Exit(1)   // 以非零状态码退出，表示错误
+	}
+
+	err12 := processLogFile(*sourceFile, *destFile, keyword)
+	if err12 != nil {
+		// 使用log.Fatalf打印错误并退出程序
+		log.Fatalf("处理文件时发生知名错误：%v", err12)
+	}
+	fmt.Println("日志文件处理完成")
 
 }
 
@@ -847,5 +905,134 @@ func worker(ctx context.Context, id int, jobs <-chan int64, results chan<- strin
 
 	}
 	return nil
+	// 	当工人i返回错误后:
+	// 1.errgroup 检测到错误
+	// g.Go() 启动的某个函数返回了非 nil 错误
 
+	// 2.errgroup 自动取消 gCtx
+	// errgroup 内部会调用与 gCtx 关联的 cancel 函数
+	// gCtx.Done() channel 被关闭
+
+	// 3.所有其他 goroutine 收到取消信号
+	// 其他正在工作的 worker 会在下次检查时退出: worker()中的case <- ctx.Done(): return ctx.Err()
+
+	// 4.等待goroutine检测到gCtx完成
+	// g.Wait(), close(resultChan)
+
+	// 5.主程序的select命中取消分支
+	// case <- gCtx.Done():
+}
+
+// 练习十一：迭代器的使用
+// 假设有一个电商系统订单列表，需要处理所有“待支付”且金额>100元的订单
+// 1.数据结构定义
+type Order struct {
+	ID     int
+	Amount float64
+	Status string // "Pending", "Paid", "Shipped"
+}
+
+// OrderManager 管理一组订单
+type OrderManager struct {
+	orders []Order
+}
+
+// 2.迭代器逻辑
+// BigPendingOrders是一个专门的迭代器方法
+// 它的任务是：遍历所有订单，剔除不符合条件的，只把符合条件的推给用户
+func (om *OrderManager) BigPendingOrders(minAmount float64) iter.Seq[Order] {
+	// 返回一个匿名函数，这就是标准的迭代器定义
+	return func(yield func(Order) bool) {
+		// 内部循环：负责具体逻辑（遍历切片，判断逻辑，筛选订单）
+		for _, o := range om.orders {
+			// 逻辑A ：如果不是待支付，直接跳过
+			if o.Status != "Pending" {
+				continue
+			}
+			// 逻辑B：如果金额不够大，直接跳过
+			if o.Amount <= minAmount {
+				continue
+			}
+
+			// 逻辑C（核心）：
+			// 找到符合条件的订单，调用yield把它推给主函数
+			// 这里的 !yield(o)是在问主函数：你还要继续吗？
+			// 如果主函数里break了， yield会返回false，我们也必须return停止干活
+			if !yield(o) {
+				return
+			}
+
+		}
+	}
+}
+
+// 练习十二:日志文件处理器 -flag,os,io,buffio等库的综合运用
+// 让我们来构建一个稍微复杂但非常实用的例子：一个命令行工具，它可以完成以下任务：
+// 读取一个指定的源日志文件。
+// 过滤出包含特定关键字（如 "ERROR"）的行。
+// 将这些过滤后的行写入一个新的目标文件。
+// 在写入前，自动创建目标文件所在的目录（如果不存在）。
+// 使用 flag 包来接收命令行参数。
+
+// processLogFile 是核心处理函数
+// 它逐行读取inputFIle, 检查是否包含keyword， 如果包含， 则写入outputFile
+func processLogFile(inputFIle, outputFile, keyword string) error {
+	// ---步骤1：打开源文件进行读取 ---
+	// os.Open 只用于读取文件
+	srcFile, err := os.Open(inputFIle)
+	if err != nil {
+		return fmt.Errorf("无法打开源文件%s:%w", inputFIle, err)
+	}
+
+	// 使用defer确保文件句柄在推出时一定会被关闭
+	defer srcFile.Close()
+
+	// --- 步骤2:确保目标路径存在 ---
+	// filepath.Dir 获取文件路径中的目录部分 os.MkdirAll创建所有必需的父目录，如果存在也不会报错
+	outputDir := filepath.Dir(outputFile)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("无法创建目录%s:%w", outputDir, err)
+	}
+
+	// --- 步骤3：创建或清空目标文件进行写入 ---
+	// os.Create是一个方便的函数，相当于os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	// 它会创建文件，如果文件已存在，则会清空其内容
+	dstFile, err := os.Create(outputFile)
+	if err != nil {
+		return fmt.Errorf("无法创建目标文件%s:%w", outputFile, err)
+	}
+	defer dstFile.Close()
+
+	// --- 步骤4：逐行读取源文件并写入目标文件 ---
+	// 使用bufio.Scanner来高效逐行读取大文件
+	scanner := bufio.NewScanner(srcFile)
+	// 使用bufio.Writer来合并多次小写入为一次大写入
+	writer := bufio.NewWriter(dstFile)
+
+	// defer writer.Flush()确保所有缓存都被写入,很重要，否则可能丢失最后一部分数据
+	defer writer.Flush()
+
+	// ---步骤5：逐行处理文件---
+	fmt.Println("开始处理文件...")
+	linesWritten := 0
+	for scanner.Scan() {
+		line := scanner.Text()
+		// strings.Contains检查行中是否包含关键字
+		if strings.Contains(line, keyword) {
+			// writer.WriteString:写入字符串到缓冲区
+			if _, err := writer.WriteString(line + "\n"); err != nil {
+				return fmt.Errorf("写入目标文件时出错:%w", err)
+			}
+			linesWritten++
+		}
+	}
+
+	// scanner.Scan()循环结束后，必须检查scanner.Err()以确定是正常结束还是因为读取错误
+	if err := scanner.Err(); err != nil {
+		// io.EOF(文件结束)不是一个错误，scanner会自动处理
+		// 这里捕获的是真正的IO错误
+		return fmt.Errorf("读取源文件时出错:%w", err)
+	}
+	fmt.Printf("成功处理文件，写入%d行包含%s的日志\n", linesWritten, keyword)
+	return nil
 }
