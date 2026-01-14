@@ -1,0 +1,2 @@
+ERROR: Failed to connect to database: timeout expired.
+ERROR: Null pointer exception at line 123.

@@ -1,0 +1,7 @@
+INFO: Application started successfully.
+DEBUG: Connecting to database...
+ERROR: Failed to connect to database: timeout expired.
+INFO: User 'Alice' logged in.
+WARNING: Disk space is running low.
+ERROR: Null pointer exception at line 123.
+INFO: Shutting down application.
