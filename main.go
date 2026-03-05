@@ -178,7 +178,7 @@ func main() {
 	fileLogger, err := NewFileLogger("exercise9_application.log")
 	if err != nil {
 		//如果日志文件都无法创建，程序无法正常运行，直接退出
-		log.Fatalf("无法创建文件日志记录器: %v", err)
+		log.Fatalf("无法创建文件日志记录器: %v", err)  
 	}
 
 	defer fileLogger.close()                      // 确保在main函数退出前，文件句柄一定会被关闭
@@ -581,7 +581,7 @@ func dispatchCoin(users []string, coins int, distribution map[string]int) (int, 
 // 练习八：面向对象的学生数据管理系统具体逻辑详解
 // 1. 数据结构 (Student 和 Roster)
 //    Student 结构体:
-//      逻辑: 这是一个纯粹的“数据容器”或“模型”，定义了一个学生应该具备哪些属性（ID, Name, Age, Subjects）。它简单、直接，不包含任何业务逻辑。
+//      逻辑: 这是一个纯粹的“数据容器”或“模型”，定义了一 个学生应该具备哪些属性（ID, Name, Age, Subjects）。它简单、直接，不包含任何业务逻辑。
 //      代码: type Student struct { ... }
 //    Roster 结构体:
 //      逻辑: 这是整个系统的“大脑”和“管理者”。它不仅仅是一个学生列表，还包含了管理这个列表所必需的“元数据”（metadata）。
