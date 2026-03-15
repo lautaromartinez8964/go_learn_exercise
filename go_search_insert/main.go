@@ -2,6 +2,7 @@ package main
 
 import "fmt"
 
+
 // 35.搜索插入位置
 func searchInsert(nums []int, target int) int {
     var len int = len(nums)
